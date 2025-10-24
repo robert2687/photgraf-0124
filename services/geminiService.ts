@@ -1,11 +1,8 @@
-
 import { 
     GoogleGenAI, 
     Modality, 
     Chat,
-    // FIX: Replaced non-existent GenerateVideosOperationResponse with GenerateVideosOperation.
     GenerateVideosOperation,
-    GenerateVideosResponse,
 } from "@google/genai";
 
 const API_KEY = process.env.API_KEY;
@@ -17,6 +14,74 @@ if (!API_KEY) {
 }
 
 const ai = new GoogleGenAI({ apiKey: API_KEY! });
+
+/**
+ * Decodes a base64 string into a Uint8Array.
+ */
+const decode = (base64: string): Uint8Array => {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+
+/**
+ * Writes a string to a DataView.
+ */
+const writeString = (view: DataView, offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+    }
+};
+
+/**
+ * Converts raw PCM audio data into a playable WAV file blob.
+ * @param pcmData The raw audio data as a Uint8Array.
+ * @param sampleRate The sample rate of the audio (e.g., 24000).
+ * @returns A Blob representing the WAV file.
+ */
+const pcmToWav = (pcmData: Uint8Array, sampleRate: number): Blob => {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = pcmData.byteLength;
+
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+
+    // fmt chunk
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    // data chunk
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    // Write PCM data
+    const pcmBytes = new Uint8Array(pcmData.buffer);
+    for (let i = 0; i < pcmBytes.length; i++) {
+        view.setUint8(44 + i, pcmBytes[i]);
+    }
+
+    return new Blob([view], { type: 'audio/wav' });
+};
+
 
 const fileToGenerativePart = (base64: string) => {
     const match = base64.match(/^data:(image\/\w+);base64,(.*)$/);
@@ -38,15 +103,22 @@ const fileToGenerativePart = (base64: string) => {
  * Generates or edits an image using a base64 image string and a text prompt.
  * @param base64Image The base64 encoded image string (e.g., from a file reader).
  * @param prompt The text prompt for generation or editing.
+ * @param isEdit A flag to indicate if this is an initial generation or a subsequent edit.
  * @returns A promise that resolves to the base64 string of the generated image.
  */
-export const generateImage = async (base64Image: string, prompt: string): Promise<string> => {
+export const generateImage = async (base64Image: string, prompt: string, isEdit = false): Promise<string> => {
     try {
         const imagePart = fileToGenerativePart(base64Image);
         
-        const fullPrompt = prompt.includes("headshot") 
-          ? `${prompt}. Ensure the person's facial features are preserved from the original image but place them in the described professional setting with appropriate attire. The final image should be a high-quality, realistic headshot.`
-          : prompt;
+        let fullPrompt: string;
+
+        if (isEdit) {
+            // For edits, instruct the model to preserve the person's likeness.
+            fullPrompt = `${prompt}. Apply this edit while preserving the person's core facial features and likeness.`;
+        } else {
+            // For initial generation, use the existing detailed prompt.
+            fullPrompt = `${prompt}. Ensure the person's facial features are preserved from the original image but place them in the described professional setting with appropriate attire. The final image should be a high-quality, realistic headshot.`;
+        }
 
         const textPart = { text: fullPrompt };
 
@@ -78,6 +150,46 @@ export const generateImage = async (base64Image: string, prompt: string): Promis
         throw new Error("Failed to generate the image due to an API error. Please try again later.");
     }
 };
+
+/**
+ * Generates speech from a text prompt.
+ * @param prompt The text to convert to speech.
+ * @returns A promise that resolves to an object URL for the generated audio.
+ */
+export const generateSpeech = async (prompt: string): Promise<string> => {
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash-preview-tts",
+            contents: [{ parts: [{ text: prompt }] }],
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: 'Kore' },
+                    },
+                },
+            },
+        });
+
+        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (!base64Audio) {
+            throw new Error("No audio data found in the API response.");
+        }
+
+        const pcmData = decode(base64Audio);
+        const wavBlob = pcmToWav(pcmData, 24000); // TTS model outputs at 24kHz
+
+        return URL.createObjectURL(wavBlob);
+
+    } catch (error) {
+        console.error("Error calling Gemini TTS API:", error);
+        if (error instanceof Error && error.message.includes('API key')) {
+             throw new Error("The API key is invalid or missing. Please check your configuration.");
+        }
+        throw new Error("Failed to generate audio due to an API error.");
+    }
+};
+
 
 /**
  * Creates a new chat session with the Gemini model.
@@ -113,7 +225,6 @@ export const generateVideo = async (
         const imagePart = fileToGenerativePart(base64Image);
 
         onProgress("Initiating video generation...");
-        // FIX: Use the correct GenerateVideosOperation type for the operation object.
         let operation: GenerateVideosOperation =
             await freshAi.models.generateVideos({
                 model: 'veo-3.1-fast-generate-preview',

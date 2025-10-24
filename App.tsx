@@ -1,26 +1,14 @@
-
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Header } from './components/Header';
 import { ImageUploader } from './components/ImageUploader';
 import { StyleSelector } from './components/StyleSelector';
 import { LoadingOverlay } from './components/LoadingOverlay';
-import { generateImage, generateVideo } from './services/geminiService';
+import { generateImage, generateVideo, generateSpeech } from './services/geminiService';
 import { HEADSHOT_STYLES, VIDEO_LOADING_MESSAGES } from './constants';
-import { SparklesIcon, EditIcon, BackIcon, ChatIcon, VideoIcon } from './components/icons';
+import { SparklesIcon, EditIcon, BackIcon, ChatIcon, VideoIcon, SpeakerIcon } from './components/icons';
 import { Chatbot } from './components/Chatbot';
 
 type AppStep = 'UPLOAD' | 'STYLE' | 'EDIT' | 'VIDEO';
-
-// AISTUDIO:
-// FIX: Removed duplicate global declaration. The error indicates this is declared elsewhere.
-// declare global {
-//     interface Window {
-//         aistudio: {
-//             hasSelectedApiKey: () => Promise<boolean>;
-//             openSelectKey: () => Promise<void>;
-//         };
-//     }
-// }
 
 const App: React.FC = () => {
     const [step, setStep] = useState<AppStep>('UPLOAD');
@@ -39,6 +27,11 @@ const App: React.FC = () => {
     const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
     const [isKeySelected, setIsKeySelected] = useState(false);
     const loadingMessageIntervalRef = useRef<number | null>(null);
+
+    // Audio state
+    const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+    const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
+
 
     const checkApiKey = useCallback(async () => {
         if (window.aistudio) {
@@ -76,6 +69,7 @@ const App: React.FC = () => {
         setVideoPrompt('');
         setAspectRatio('16:9');
         setGeneratedVideoUrl(null);
+        setGeneratedAudioUrl(null);
         if (loadingMessageIntervalRef.current) {
             clearInterval(loadingMessageIntervalRef.current);
             loadingMessageIntervalRef.current = null;
@@ -104,14 +98,33 @@ const App: React.FC = () => {
         setIsLoading(true);
         setLoadingMessage('Applying your edits...');
         setError(null);
+        setGeneratedAudioUrl(null); // Invalidate previous audio
         try {
-            const result = await generateImage(generatedImage, editPrompt);
+            const result = await generateImage(generatedImage, editPrompt, true);
             setGeneratedImage(result); // Replace the current generated image with the edited one
             setEditPrompt(''); // Clear the input field
         } catch (err) {
             setError(err instanceof Error ? err.message : 'An unknown error occurred.');
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleGenerateVoiceGuide = async () => {
+        if (!stylePrompt) return;
+        
+        const styleName = HEADSHOT_STYLES.find(s => s.prompt === stylePrompt)?.name || 'this';
+        const prompt = `Give a friendly, concise voice guide for a headshot in the '${styleName}' style. Include one quick photography tip.`;
+        
+        setIsGeneratingAudio(true);
+        setError(null);
+        try {
+            const audioUrl = await generateSpeech(prompt);
+            setGeneratedAudioUrl(audioUrl);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to generate audio.');
+        } finally {
+            setIsGeneratingAudio(false);
         }
     };
 
@@ -220,19 +233,34 @@ const App: React.FC = () => {
                                         Apply Edit
                                     </button>
                                 </div>
-                                {error && <p className="text-red-400 mt-4 text-center">{error}</p>}
-
-                                <div className="mt-8">
-                                    <h3 className="text-xl font-semibold mb-4 text-center text-indigo-300">Next Step: Bring it to Life!</h3>
-                                    <button
-                                        onClick={() => setStep('VIDEO')}
-                                        className="w-full flex items-center justify-center gap-3 bg-purple-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-purple-500 transition-all duration-300 shadow-lg"
-                                    >
-                                        <VideoIcon />
-                                        Animate Your Headshot
-                                    </button>
-                                </div>
                                 
+                                <div className="mt-8 border-t border-gray-700 pt-6">
+                                    <h3 className="text-xl font-semibold mb-4 text-indigo-300">Enhance Your Creation</h3>
+                                    <div className="flex flex-col gap-4">
+                                        <button
+                                            onClick={handleGenerateVoiceGuide}
+                                            disabled={isGeneratingAudio || isLoading}
+                                            className="w-full flex items-center justify-center gap-3 bg-teal-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-teal-500 transition-all duration-300 shadow-lg disabled:bg-gray-600"
+                                        >
+                                            <SpeakerIcon />
+                                            Get Voice Guide
+                                        </button>
+                                        {isGeneratingAudio && <p className="text-center text-teal-300">Generating audio...</p>}
+                                        {generatedAudioUrl && (
+                                            <audio controls src={generatedAudioUrl} className="w-full rounded-lg">
+                                                Your browser does not support the audio element.
+                                            </audio>
+                                        )}
+                                        <button
+                                            onClick={() => setStep('VIDEO')}
+                                            className="w-full flex items-center justify-center gap-3 bg-purple-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-purple-500 transition-all duration-300 shadow-lg"
+                                        >
+                                            <VideoIcon />
+                                            Animate Your Headshot
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <div className="mt-8 border-t border-gray-700 pt-6">
                                      <button
                                         onClick={handleReset}
@@ -242,6 +270,7 @@ const App: React.FC = () => {
                                         Start Over
                                     </button>
                                 </div>
+                                {error && <p className="text-red-400 mt-4 text-center">{error}</p>}
                             </div>
                         </div>
                     </div>
