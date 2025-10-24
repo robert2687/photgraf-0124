@@ -1,0 +1,5 @@
+{
+  "name": "AI Headshot Photographer",
+  "description": "Upload a selfie, choose a professional style, and generate a high-quality headshot. Further refine your image with text-based editing prompts.",
+  "requestFramePermissions": []
+}
