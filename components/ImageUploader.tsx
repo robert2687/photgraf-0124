@@ -21,19 +21,22 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageUpload }) =
         }
     };
 
-    const onDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    // FIX: Changed event type to HTMLLabelElement to match the element it's used on.
+    const onDragOver = useCallback((e: React.DragEvent<HTMLLabelElement>) => {
         e.preventDefault();
         e.stopPropagation();
         setIsDragging(true);
     }, []);
 
-    const onDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    // FIX: Changed event type to HTMLLabelElement to match the element it's used on.
+    const onDragLeave = useCallback((e: React.DragEvent<HTMLLabelElement>) => {
         e.preventDefault();
         e.stopPropagation();
         setIsDragging(false);
     }, []);
 
-    const onDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    // FIX: Changed event type to HTMLLabelElement to match the element it's used on.
+    const onDrop = useCallback((e: React.DragEvent<HTMLLabelElement>) => {
         e.preventDefault();
         e.stopPropagation();
         setIsDragging(false);

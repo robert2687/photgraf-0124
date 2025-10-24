@@ -1,15 +1,26 @@
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Header } from './components/Header';
 import { ImageUploader } from './components/ImageUploader';
 import { StyleSelector } from './components/StyleSelector';
 import { LoadingOverlay } from './components/LoadingOverlay';
-import { generateImage } from './services/geminiService';
-import { HEADSHOT_STYLES } from './constants';
-import { SparklesIcon, EditIcon, BackIcon, ChatIcon } from './components/icons';
+import { generateImage, generateVideo } from './services/geminiService';
+import { HEADSHOT_STYLES, VIDEO_LOADING_MESSAGES } from './constants';
+import { SparklesIcon, EditIcon, BackIcon, ChatIcon, VideoIcon } from './components/icons';
 import { Chatbot } from './components/Chatbot';
 
-type AppStep = 'UPLOAD' | 'STYLE' | 'EDIT';
+type AppStep = 'UPLOAD' | 'STYLE' | 'EDIT' | 'VIDEO';
+
+// AISTUDIO:
+// FIX: Removed duplicate global declaration. The error indicates this is declared elsewhere.
+// declare global {
+//     interface Window {
+//         aistudio: {
+//             hasSelectedApiKey: () => Promise<boolean>;
+//             openSelectKey: () => Promise<void>;
+//         };
+//     }
+// }
 
 const App: React.FC = () => {
     const [step, setStep] = useState<AppStep>('UPLOAD');
@@ -21,6 +32,29 @@ const App: React.FC = () => {
     const [loadingMessage, setLoadingMessage] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [isChatOpen, setIsChatOpen] = useState(false);
+
+    // Video state
+    const [videoPrompt, setVideoPrompt] = useState<string>('');
+    const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
+    const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
+    const [isKeySelected, setIsKeySelected] = useState(false);
+    const loadingMessageIntervalRef = useRef<number | null>(null);
+
+    const checkApiKey = useCallback(async () => {
+        if (window.aistudio) {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            setIsKeySelected(hasKey);
+            return hasKey;
+        }
+        return false;
+    }, []);
+
+    useEffect(() => {
+        if (step === 'VIDEO') {
+            checkApiKey();
+        }
+    }, [step, checkApiKey]);
+
 
     const handleImageUpload = (base64Image: string) => {
         setOriginalImage(base64Image);
@@ -39,6 +73,13 @@ const App: React.FC = () => {
         setIsLoading(false);
         setLoadingMessage('');
         setError(null);
+        setVideoPrompt('');
+        setAspectRatio('16:9');
+        setGeneratedVideoUrl(null);
+        if (loadingMessageIntervalRef.current) {
+            clearInterval(loadingMessageIntervalRef.current);
+            loadingMessageIntervalRef.current = null;
+        }
     }, []);
 
     const handleGenerate = async () => {
@@ -70,6 +111,46 @@ const App: React.FC = () => {
         } catch (err) {
             setError(err instanceof Error ? err.message : 'An unknown error occurred.');
         } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleGenerateVideo = async () => {
+        if (!generatedImage || !videoPrompt) return;
+
+        try {
+            const hasKey = await checkApiKey();
+            if (!hasKey) {
+                await window.aistudio.openSelectKey();
+                // Assume key is selected now and proceed
+                setIsKeySelected(true);
+            }
+
+            setIsLoading(true);
+
+            // Start cycling through loading messages
+            let messageIndex = 0;
+            setLoadingMessage(VIDEO_LOADING_MESSAGES[messageIndex]);
+            loadingMessageIntervalRef.current = window.setInterval(() => {
+                messageIndex = (messageIndex + 1) % VIDEO_LOADING_MESSAGES.length;
+                setLoadingMessage(VIDEO_LOADING_MESSAGES[messageIndex]);
+            }, 5000);
+
+            const onProgress = (message: string) => {
+                // The interval is already running, so we won't override it
+                console.log("Video Progress:", message);
+            };
+
+            const result = await generateVideo(generatedImage, videoPrompt, aspectRatio, onProgress);
+            setGeneratedVideoUrl(result);
+
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'An unknown error occurred while generating the video.');
+        } finally {
+            if (loadingMessageIntervalRef.current) {
+                clearInterval(loadingMessageIntervalRef.current);
+                loadingMessageIntervalRef.current = null;
+            }
             setIsLoading(false);
         }
     };
@@ -122,7 +203,7 @@ const App: React.FC = () => {
                             </div>
                             <div className="flex flex-col">
                                 <h2 className="text-2xl font-semibold mb-4 text-gray-300">Refine Your Image</h2>
-                                <p className="text-gray-400 mb-4">Describe the changes you'd like to make. For example: "Add a retro filter", "Change the background to a library", "Make the smile wider".</p>
+                                <p className="text-gray-400 mb-4">Describe the changes you'd like to make. For example: "Add a retro filter", "Change the background to a library".</p>
                                 <div className="flex flex-col gap-4">
                                     <textarea
                                         value={editPrompt}
@@ -140,6 +221,18 @@ const App: React.FC = () => {
                                     </button>
                                 </div>
                                 {error && <p className="text-red-400 mt-4 text-center">{error}</p>}
+
+                                <div className="mt-8">
+                                    <h3 className="text-xl font-semibold mb-4 text-center text-indigo-300">Next Step: Bring it to Life!</h3>
+                                    <button
+                                        onClick={() => setStep('VIDEO')}
+                                        className="w-full flex items-center justify-center gap-3 bg-purple-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-purple-500 transition-all duration-300 shadow-lg"
+                                    >
+                                        <VideoIcon />
+                                        Animate Your Headshot
+                                    </button>
+                                </div>
+                                
                                 <div className="mt-8 border-t border-gray-700 pt-6">
                                      <button
                                         onClick={handleReset}
@@ -151,6 +244,96 @@ const App: React.FC = () => {
                                 </div>
                             </div>
                         </div>
+                    </div>
+                );
+            case 'VIDEO':
+                return (
+                    <div className="w-full max-w-6xl mx-auto p-4 md:p-8">
+                        {generatedVideoUrl ? (
+                            <div className="flex flex-col items-center gap-8">
+                                <h2 className="text-3xl font-bold text-center text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-indigo-400">Your Animated Headshot is Ready!</h2>
+                                <div className="w-full max-w-2xl bg-gray-800 rounded-lg overflow-hidden shadow-2xl">
+                                    <video 
+                                        src={generatedVideoUrl}
+                                        controls 
+                                        autoPlay 
+                                        loop 
+                                        playsInline 
+                                        className="w-full h-full object-contain" 
+                                    />
+                                </div>
+                                <button
+                                    onClick={handleReset}
+                                    className="w-full max-w-xs flex items-center justify-center gap-2 bg-gray-700 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-lg"
+                                >
+                                    <BackIcon />
+                                    Start Over
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+                                <div className="flex flex-col items-center">
+                                    <h2 className="text-2xl font-semibold mb-4 text-gray-300">Starting Image</h2>
+                                    <div className="aspect-square w-full max-w-md bg-gray-800 rounded-lg overflow-hidden shadow-2xl">
+                                        {generatedImage && <img src={generatedImage} alt="Generated headshot for video" className="w-full h-full object-cover" />}
+                                    </div>
+                                </div>
+                                <div className="flex flex-col gap-6">
+                                    <div>
+                                        <h2 className="text-2xl font-semibold mb-2 text-gray-300">1. Describe the Video</h2>
+                                        <p className="text-gray-400 mb-4">What should happen? e.g., "A gentle zoom in, with a subtle smile appearing", "The background subtly shifts".</p>
+                                        <textarea
+                                            value={videoPrompt}
+                                            onChange={(e) => setVideoPrompt(e.target.value)}
+                                            placeholder="e.g., A gentle zoom in..."
+                                            className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:outline-none transition h-24 resize-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-2xl font-semibold mb-4 text-gray-300">2. Select Aspect Ratio</h2>
+                                        <div className="flex gap-4">
+                                            {(['16:9', '9:16'] as const).map(ratio => (
+                                                <button 
+                                                    key={ratio}
+                                                    onClick={() => setAspectRatio(ratio)}
+                                                    className={`flex-1 p-3 rounded-lg font-semibold transition ${aspectRatio === ratio ? 'bg-indigo-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+                                                >
+                                                    {ratio} {ratio === '16:9' ? '(Landscape)' : '(Portrait)'}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    {!isKeySelected && (
+                                        <div className="bg-yellow-900/50 border border-yellow-700 text-yellow-300 px-4 py-3 rounded-lg" role="alert">
+                                            <p className="font-bold">Action Required</p>
+                                            <p className="text-sm">Video generation requires you to select your own API key. This is a free operation for this model.</p>
+                                            <p className="text-sm mt-2">For more information, see the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="underline hover:text-yellow-200">billing documentation</a>.</p>
+                                            <button onClick={() => window.aistudio.openSelectKey().then(() => setIsKeySelected(true))} className="mt-3 bg-yellow-600 text-white font-bold py-2 px-4 rounded hover:bg-yellow-500">
+                                                Select API Key
+                                            </button>
+                                        </div>
+                                    )}
+                                    <div className="flex flex-col gap-4 mt-4">
+                                        <button
+                                            onClick={handleGenerateVideo}
+                                            disabled={!videoPrompt || !isKeySelected || isLoading}
+                                            className="w-full flex items-center justify-center gap-3 bg-purple-600 text-white font-bold py-4 px-6 rounded-lg hover:bg-purple-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-all duration-300 shadow-lg text-lg"
+                                        >
+                                            <VideoIcon />
+                                            Generate Video
+                                        </button>
+                                        <button
+                                            onClick={() => setStep('EDIT')}
+                                            className="w-full flex items-center justify-center gap-2 bg-gray-700 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-lg"
+                                        >
+                                            <BackIcon />
+                                            Back to Editing
+                                        </button>
+                                    </div>
+                                    {error && <p className="text-red-400 mt-2 text-center">{error}</p>}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 );
         }
